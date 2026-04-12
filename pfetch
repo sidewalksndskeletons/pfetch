@@ -171,7 +171,9 @@ get_uptime() {
 
 get_pkgs() {
     packages=$(
-        if command -v pacman-key >/dev/null 2>&1; then pacman -Qq
+        if [ -d /var/db/kiss/installed ]; then printf '%s\n' /var/db/kiss/installed/*/
+        elif command -v cpt-list >/dev/null 2>&1; then printf '%s\n' /var/db/cpt/installed/*/
+        elif command -v pacman-key >/dev/null 2>&1; then pacman -Qq
         elif command -v dpkg >/dev/null 2>&1; then dpkg-query -f '.\n' -W
         elif command -v rpm >/dev/null 2>&1; then rpm -qa
         elif command -v xbps-query >/dev/null 2>&1; then xbps-query -l
@@ -275,7 +277,7 @@ get_palette() {
     printf '%s%s%s%s\n' \
         "${e}[${ascii_width}C" \
         "${e}[7m" \
-        "${c1}  ${c1}  ${c2}  ${c2}  ${c3}  ${c3}  ${c4}  ${c4}  ${c5}  ${c5}  ${c6}  ${c6}  " \
+        "${c1} ${c1} ${c2} ${c2} ${c3} ${c3} ${c4} ${c4} ${c5} ${c5} ${c6} ${c6} " \
         "$RST" >&6
     info_height=$((${info_height:-0} + 1))
 }
