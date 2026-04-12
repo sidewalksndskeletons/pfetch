@@ -1,374 +1,5 @@
 #!/bin/sh
 
-esc() {
-    case $1 in
-        CUU) e="${esc_c}[${2}A" ;;
-        CUD) e="${esc_c}[${2}B" ;;
-        CUF) e="${esc_c}[${2}C" ;;
-        CUB) e="${esc_c}[${2}D" ;;
-        SGR)
-            case ${PF_COLOR:=1} in
-                (1) e="${esc_c}[${2}m" ;;
-                (0) e= ;;
-            esac
-        ;;
-        DECAWM)
-            case $TERM in
-                (dumb|minix|cons25) e= ;;
-                (*) e="${esc_c}[?7${2}" ;;
-            esac
-        ;;
-    esac
-}
-
-esc_p() {
-    esc "$@"
-    printf '%s' "$e"
-}
-
-has() {
-    _cmd=$(command -v "$1") 2>/dev/null || return 1
-    [ -x "$_cmd" ] || return 1
-}
-
-log() {
-    [ "$2" ] || return
-
-    name=$1
-    use_seperator=$3
-
-    # shellcheck disable=2046,2086
-    {
-        set -f
-        set +f -- $2
-        info=$*
-    }
-
-    esc_p CUF "$ascii_width"
-    esc_p SGR "3${PF_COL1-4}"
-    esc_p SGR 1
-    printf '%s' "$name"
-    esc_p SGR 0
-
-    [ "$use_seperator" ] || printf %s "$PF_SEP"
-
-    esc_p CUB "${#name}"
-    esc_p CUF "${PF_ALIGN:-$info_length}"
-
-    esc_p SGR "3${PF_COL2-9}"
-    printf '%s' "$info"
-    esc_p SGR 0
-    printf '\n'
-
-    info_height=$((${info_height:-0} + 1))
-}
-
-get_title() {
-    user=${USER:-$(id -un)}
-
-    # shellcheck disable=3028,2039
-    hostname=${HOSTNAME:-${hostname:-$(hostname)}}
-    [ "$hostname" ] || read -r hostname < /etc/hostname
-
-    esc SGR 1
-    user=$e$user
-    esc SGR "3${PF_COL3:-1}"
-    user=$e$user
-    esc SGR 1
-    user=$user$e
-    esc SGR 1
-    hostname=$e$hostname
-    esc SGR "3${PF_COL3:-1}"
-    hostname=$e$hostname
-
-    log "${user}@${hostname}" " " " " >&6
-}
-
-get_os() {
-    [ "$distro" ] && {
-        log os "$distro" >&6
-        return
-    }
-
-    case $os in
-        (Linux*)
-            if has lsb_release; then
-                distro=$(lsb_release -sd)
-            elif [ -d /system/app ] && [ -d /system/priv-app ]; then
-                distro="Android $(getprop ro.build.version.release)"
-            elif [ -f /etc/os-release ]; then
-                while IFS='=' read -r key val; do
-                    case $key in
-                        (PRETTY_NAME) distro=$val ;;
-                    esac
-                done < /etc/os-release
-            fi
-
-            distro=${distro##[\"\']}
-            distro=${distro%%[\"\']}
-
-            case $PATH in
-                (*/bedrock/cross/*) distro='Bedrock Linux' ;;
-            esac
-
-            if [ "$WSLENV" ]; then
-                distro="${distro}${WSLENV+ on Windows 10 [WSL2]}"
-            elif [ -z "${kernel%%*-Microsoft}" ]; then
-                distro="$distro on Windows 10 [WSL1]"
-            fi
-        ;;
-
-        (*) distro="$os $kernel" ;;
-    esac
-}
-
-get_kernel() {
-    log kernel "$kernel" >&6
-}
-
-get_host() {
-    case $os in
-        (Linux*)
-            read -r name    < /sys/devices/virtual/dmi/id/product_name 2>/dev/null
-            read -r version < /sys/devices/virtual/dmi/id/product_version 2>/dev/null
-            read -r model   < /sys/firmware/devicetree/base/model 2>/dev/null
-            host="$name $version $model"
-        ;;
-    esac
-
-    # shellcheck disable=2046,2086
-    {
-        set -f
-        set +f -- $host
-        host=
-    }
-
-    for word do
-        case $word in
-            (To|[Bb]e|[Ff]illed|[Bb]y|O.E.M.|OEM|\
-            Not|Applicable|Specified|System|Product|Name|\
-            Version|Undefined|Default|string|INVALID|os|\
-            Type1ProductConfigId)
-                continue
-            ;;
-        esac
-        host="$host$word "
-    done
-
-    log host "${host:-$arch}" >&6
-}
-
-get_uptime() {
-    case $os in
-        (Linux*)
-            IFS=. read -r s _ < /proc/uptime
-        ;;
-    esac
-
-    d=$((s / 60 / 60 / 24))
-    h=$((s / 60 / 60 % 24))
-    m=$((s / 60 % 60))
-
-    case "$d" in ([!0]*) uptime="${uptime}${d}d "; esac
-    case "$h" in ([!0]*) uptime="${uptime}${h}h "; esac
-    case "$m" in ([!0]*) uptime="${uptime}${m}m "; esac
-
-    log uptime "${uptime:-0m}" >&6
-}
-
-get_pkgs() {
-    packages=$(
-        case $os in
-            (Linux*)
-                has pacman-key && pacman -Qq
-                has dpkg       && dpkg-query -f '.\n' -W
-                has rpm        && rpm -qa
-                has xbps-query && xbps-query -l
-                has apk        && apk info
-                has emerge     && printf '%s\n' /var/db/pkg/*/*/
-                has nix-store  && {
-                    nix-store -q --requisites /run/current-system/sw
-                    nix-store -q --requisites ~/.nix-profile
-                }
-            ;;
-        esac | wc -l
-    )
-
-    packages=${packages#"${packages%%[![:space:]]*}"}
-    packages=${packages%"${packages##*[![:space:]]}"}
-
-    case $packages in
-        (1?*|[2-9]*) log pkgs "$packages" >&6 ;;
-    esac
-}
-
-get_memory() {
-    case $os in
-        (Linux*)
-            while IFS=':k ' read -r key val _; do
-                case $key in
-                    (MemTotal)     mem_full=$val ;;
-                    (MemFree)      mem_free=$val ;;
-                    (Buffers)      mem_buf=$val ;;
-                    (Cached)       mem_cache=$val ;;
-                    (SReclaimable) mem_srec=$val ;;
-                esac
-            done < /proc/meminfo
-
-            mem_used=$(((mem_full - ${mem_free:-0} - ${mem_buf:-0} - ${mem_cache:-0} - ${mem_srec:-0}) / 1024))
-
-            mem_full=$((mem_full / 1024))
-        ;;
-    esac
-
-    log memory "${mem_used:-?}M / ${mem_full:-?}M" >&6
-}
-
-get_wm() {
-    # PF_WM environment variable overrides detection
-    [ "$PF_WM" ] && {
-        log wm "$PF_WM" >&6
-        return
-    }
-
-    [ "$DISPLAY" ] || [ "$WAYLAND_DISPLAY" ] || return
-
-    if [ "$WAYLAND_DISPLAY" ]; then
-        # Wayland: check known compositor env vars first
-        case ${XDG_CURRENT_DESKTOP:-} in
-            (sway|Sway)       wm=sway ;;
-            (Hyprland)        wm=Hyprland ;;
-            (*) ;;
-        esac
-
-        [ "$wm" ] || {
-            while read -r ps_line; do
-                case $ps_line in
-                    (*sway*)      wm=sway ;;
-                    (*hyprland*)  wm=Hyprland ;;
-                    (*river*)     wm=river ;;
-                    (*wayfire*)   wm=wayfire ;;
-                    (*labwc*)     wm=labwc ;;
-                    (*cage*)      wm=cage ;;
-                    (*dwl*)       wm=dwl ;;
-                esac
-            done <<-EOF
-				$(ps x 2>/dev/null)
-			EOF
-        }
-    fi
-
-    [ "$wm" ] || {
-        has xprop && [ "$DISPLAY" ] && {
-            id=$(xprop -root -notype _NET_SUPPORTING_WM_CHECK 2>/dev/null)
-            id=${id##* }
-
-            [ "$id" ] && {
-                wm=$(xprop -id "$id" -notype -len 25 -f _NET_WM_NAME 8t 2>/dev/null)
-
-                case $wm in
-                    (*'_NET_WM_NAME = '*)
-                        wm=${wm##*_NET_WM_NAME = \"}
-                        wm=${wm%%\"*}
-                    ;;
-                    (*) wm= ;;
-                esac
-            }
-        }
-
-        [ "$wm" ] || {
-            while read -r ps_line; do
-                case $ps_line in
-                    (*catwm*)     wm=catwm ;;
-                    (*fvwm*)      wm=fvwm ;;
-                    (*dwm*)       wm=dwm ;;
-                    (*2bwm*)      wm=2bwm ;;
-                    (*monsterwm*) wm=monsterwm ;;
-                    (*wmaker*)    wm='Window Maker' ;;
-                    (*sowm*)      wm=sowm ;;
-                    (*penrose*)   wm=penrose ;;
-                    (*bspwm*)     wm=bspwm ;;
-                    (*i3*)        wm=i3 ;;
-                    (*openbox*)   wm=openbox ;;
-                    (*awesome*)   wm=awesome ;;
-                    (*herbstluftwm*) wm=herbstluftwm ;;
-                esac
-            done <<-EOF
-				$(ps x 2>/dev/null)
-			EOF
-        }
-    }
-
-    log wm "$wm" >&6
-}
-
-get_de() {
-    log de "${XDG_CURRENT_DESKTOP:-$DESKTOP_SESSION}" >&6
-}
-
-get_shell() {
-    log shell "${SHELL##*/}" >&6
-}
-
-get_editor() {
-    editor=${VISUAL:-"$EDITOR"}
-    log editor "${editor##*/}" >&6
-}
-
-get_palette() {
-    # shellcheck disable=2154
-    {
-        esc SGR 7
-        palette="$e$c1 $c1 $c2 $c2 $c3 $c3 $c4 $c4 $c5 $c5 $c6 $c6 "
-        esc SGR 0
-        palette="$palette$e"
-    }
-
-    printf '\n' >&6
-    log "$palette
-        " " " " " >&6
-}
-
-get_ascii() {
-    read_ascii() {
-        PF_COL1=${PF_COL1:-${1:-7}}
-        PF_COL3=${PF_COL3:-$((${1:-7}%8+1))}
-
-        while IFS= read -r line; do
-            ascii="$ascii$line
-"
-        done
-    }
-
-    # shellcheck disable=2154
-    read_ascii 4 <<-EOF
-		${c4}    ___
-		   ${c4}(${c7}.. ${c4}|
-		   ${c4}(${c5}<> ${c4}|
-		  ${c4}/ ${c7}__  ${c4}\\
-		 ${c4}( ${c7}/  \\ ${c4}/|
-		${c5}_${c4}/\\ ${c7}__)${c4}/${c5}_${c4})
-		${c5}\/${c4}-____${c5}\/
-	EOF
-
-    while read -r line; do
-        ascii_height=$((${ascii_height:-0} + 1))
-        [ "${#line}" -gt "${ascii_width:-0}" ] &&
-            ascii_width=${#line}
-    done <<-EOF
-		$(printf %s "$ascii" | sed 's/\[3.m//g')
-	EOF
-
-    ascii_width=$((ascii_width + 4))
-
-    {
-        esc_p SGR 1
-        printf '%s' "$ascii"
-        esc_p SGR 0
-        esc_p CUU "$ascii_height"
-    } >&6
-}
-
 main() {
     case $* in
         -v) printf '%s 0.1.0\n' "${0##*/}"; return 0 ;;
@@ -384,20 +15,23 @@ main() {
 
     exec 6>&1 >/dev/null
 
-    esc_c=$(printf '\033')
+    e=$(printf '\033')
+    RST="${e}[0m"
+    BLD="${e}[1m"
+    c1="${e}[31m" c2="${e}[32m" c3="${e}[33m" c4="${e}[34m"
+    c5="${e}[35m" c6="${e}[36m" c7="${e}[37m"
+    COL1="${e}[3${PF_COL1:-4}m"
+    COL2="${e}[3${PF_COL2:-9}m"
+    COL3="${e}[3${PF_COL3:-1}m"
 
-    ! [ -f "$PF_SOURCE" ] || . "$PF_SOURCE"
+    case $TERM in
+        (dumb|minix|cons25) ;;
+        (*) printf '%s' "${e}[?7l" >&6
+            trap 'printf "%s" "${e}[?7h" >&6' EXIT ;;
+    esac
 
     [ -w "${TMPDIR:-/tmp}" ] || export TMPDIR=~
-
-    # shellcheck disable=2034
-    for _c in c1 c2 c3 c4 c5 c6 c7 c8; do
-        esc SGR "3${_c#?}" 0
-        export "$_c=$e"
-    done
-
-    esc_p DECAWM l >&6
-    trap 'esc_p DECAWM h >&6' EXIT
+    ! [ -f "${PF_SOURCE:-}" ] || . "$PF_SOURCE"
 
     read -r os kernel arch <<-EOF
 		$(uname -srm)
@@ -410,12 +44,11 @@ main() {
         set -f
         set +f -- ${PF_INFO-ascii title os host kernel uptime pkgs memory wm}
 
+        info_length=0
         for info do
             command -v "get_$info" >/dev/null || continue
-            [ "${#info}" -gt "${info_length:-0}" ] &&
-                info_length=${#info}
+            [ "${#info}" -gt "$info_length" ] && info_length=${#info}
         done
-
         info_length=$((info_length + 1))
 
         for info do
@@ -426,10 +59,252 @@ main() {
     [ "${info_height:-0}" -lt "${ascii_height:-0}" ] &&
         cursor_pos=$((ascii_height - info_height))
 
-    while [ "${i:=0}" -le "${cursor_pos:-0}" ]; do
+    i=0
+    while [ "$i" -le "${cursor_pos:-0}" ]; do
         printf '\n'
         i=$((i + 1))
     done >&6
+}
+
+log() {
+    [ "$2" ] || return
+
+    _name=$1 _sep=${3:-${PF_SEP}}
+    _pad=$((${PF_ALIGN:-$info_length} - ${#_name}))
+
+    # shellcheck disable=2046,2086
+    { set -f; set +f -- $2; _info=$*; }
+
+    printf '%s%s%s%s%s%s%s%s%s\n' \
+        "${e}[${ascii_width}C" \
+        "${COL1}${BLD}" "$_name" "$RST" \
+        "$_sep" \
+        "${e}[${_pad}C" \
+        "$COL2" "$_info" "$RST" >&6
+
+    info_height=$((${info_height:-0} + 1))
+}
+
+get_title() {
+    user=${USER:-$(id -un)}
+    # shellcheck disable=3028,2039
+    hostname=${HOSTNAME:-${hostname:-$(hostname)}}
+    [ "$hostname" ] || read -r hostname < /etc/hostname
+
+    printf '%s%s%s%s@%s%s%s\n' \
+        "${e}[${ascii_width}C" \
+        "${BLD}${COL3}" "$user" "$RST" \
+        "${BLD}${COL3}" "$hostname" "$RST" >&6
+
+    info_height=$((${info_height:-0} + 1))
+}
+
+get_os() {
+    [ "$distro" ] && { log os "$distro"; return; }
+
+    case $os in
+        (Linux*)
+            if [ -f /etc/os-release ]; then
+                while IFS='=' read -r key val; do
+                    case $key in (PRETTY_NAME) distro=$val; break ;; esac
+                done < /etc/os-release
+            elif command -v lsb_release >/dev/null 2>&1; then
+                distro=$(lsb_release -sd)
+            elif [ -d /system/app ] && [ -d /system/priv-app ]; then
+                distro="Android $(getprop ro.build.version.release)"
+            fi
+
+            distro=${distro##[\"\']}
+            distro=${distro%%[\"\']}
+
+            case $PATH in (*/bedrock/cross/*) distro='Bedrock Linux' ;; esac
+
+            if [ "$WSLENV" ]; then
+                distro="${distro}${WSLENV+ on Windows 10 [WSL2]}"
+            elif [ -z "${kernel%%*-Microsoft}" ]; then
+                distro="$distro on Windows 10 [WSL1]"
+            fi
+        ;;
+        (*) distro="$os $kernel" ;;
+    esac
+}
+
+get_kernel() { log kernel "$kernel"; }
+
+get_host() {
+    case $os in
+        (Linux*)
+            read -r name    < /sys/devices/virtual/dmi/id/product_name 2>/dev/null
+            read -r version < /sys/devices/virtual/dmi/id/product_version 2>/dev/null
+            read -r model   < /sys/firmware/devicetree/base/model 2>/dev/null
+            host="$name $version $model"
+        ;;
+    esac
+
+    # shellcheck disable=2046,2086
+    { set -f; set +f -- $host; host=; }
+
+    for word do
+        case $word in
+            (To|[Bb]e|[Ff]illed|[Bb]y|O.E.M.|OEM|\
+            Not|Applicable|Specified|System|Product|Name|\
+            Version|Undefined|Default|string|INVALID|os|\
+            Type1ProductConfigId) continue ;;
+        esac
+        host="$host$word "
+    done
+
+    log host "${host:-$arch}"
+}
+
+get_uptime() {
+    IFS=. read -r s _ < /proc/uptime 2>/dev/null || return
+
+    d=$((s / 86400)) h=$((s / 3600 % 24)) m=$((s / 60 % 60))
+
+    case "$d" in ([!0]*) uptime="${d}d "; esac
+    case "$h" in ([!0]*) uptime="${uptime}${h}h "; esac
+    case "$m" in ([!0]*) uptime="${uptime}${m}m "; esac
+
+    log uptime "${uptime:-0m}"
+}
+
+get_pkgs() {
+    packages=$(
+        if command -v pacman-key >/dev/null 2>&1; then pacman -Qq
+        elif command -v dpkg >/dev/null 2>&1; then dpkg-query -f '.\n' -W
+        elif command -v rpm >/dev/null 2>&1; then rpm -qa
+        elif command -v xbps-query >/dev/null 2>&1; then xbps-query -l
+        elif command -v apk >/dev/null 2>&1; then apk info
+        elif [ -d /var/db/pkg ]; then printf '%s\n' /var/db/pkg/*/*/
+        fi | wc -l
+    )
+
+    packages=${packages#"${packages%%[![:space:]]*}"}
+    packages=${packages%"${packages##*[![:space:]]}"}
+
+    case $packages in (1?*|[2-9]*) log pkgs "$packages" ;; esac
+}
+
+get_memory() {
+    _got=0
+    while IFS=':k ' read -r key val _; do
+        case $key in
+            (MemTotal)     mem_full=$val;  _got=$((_got + 1)) ;;
+            (MemFree)      mem_free=$val;  _got=$((_got + 1)) ;;
+            (Buffers)      mem_buf=$val;   _got=$((_got + 1)) ;;
+            (Cached)       mem_cache=$val; _got=$((_got + 1)) ;;
+            (SReclaimable) mem_srec=$val;  _got=$((_got + 1)) ;;
+        esac
+        [ "$_got" -eq 5 ] && break
+    done < /proc/meminfo 2>/dev/null || return
+
+    mem_used=$(((mem_full - mem_free - mem_buf - mem_cache - mem_srec) / 1024))
+    mem_full=$((mem_full / 1024))
+
+    log memory "${mem_used}M / ${mem_full}M"
+}
+
+get_wm() {
+    [ "${PF_WM:-}" ] && { log wm "$PF_WM"; return; }
+    [ "$DISPLAY" ] || [ "${WAYLAND_DISPLAY:-}" ] || return
+
+    if [ "${WAYLAND_DISPLAY:-}" ]; then
+        case ${XDG_CURRENT_DESKTOP:-} in
+            (sway|Sway)  wm=sway ;;
+            (Hyprland)   wm=Hyprland ;;
+        esac
+    fi
+
+    [ "${wm:-}" ] || {
+        _ps=$(ps x 2>/dev/null)
+
+        if [ "$DISPLAY" ] && command -v xprop >/dev/null 2>&1; then
+            id=$(xprop -root -notype _NET_SUPPORTING_WM_CHECK 2>/dev/null)
+            id=${id##* }
+            [ "$id" ] && {
+                wm=$(xprop -id "$id" -notype -len 25 -f _NET_WM_NAME 8t 2>/dev/null)
+                case $wm in
+                    (*'_NET_WM_NAME = '*)
+                        wm=${wm##*_NET_WM_NAME = \"}
+                        wm=${wm%%\"*} ;;
+                    (*) wm= ;;
+                esac
+            }
+        fi
+
+        [ "${wm:-}" ] || {
+            case $_ps in
+                (*dwl*)       wm=dwl ;;
+                (*sway*)      wm=sway ;;
+                (*hyprland*)  wm=Hyprland ;;
+                (*river*)     wm=river ;;
+                (*wayfire*)   wm=wayfire ;;
+                (*labwc*)     wm=labwc ;;
+                (*cage*)      wm=cage ;;
+                (*dwm*)       wm=dwm ;;
+                (*bspwm*)     wm=bspwm ;;
+                (*i3*)        wm=i3 ;;
+                (*openbox*)   wm=openbox ;;
+                (*awesome*)   wm=awesome ;;
+                (*fvwm*)      wm=fvwm ;;
+                (*2bwm*)      wm=2bwm ;;
+                (*sowm*)      wm=sowm ;;
+                (*penrose*)   wm=penrose ;;
+                (*catwm*)     wm=catwm ;;
+                (*monsterwm*) wm=monsterwm ;;
+                (*wmaker*)    wm='Window Maker' ;;
+                (*herbstluftwm*) wm=herbstluftwm ;;
+            esac
+        }
+    }
+
+    log wm "${wm:-}"
+}
+
+get_de() { log de "${XDG_CURRENT_DESKTOP:-$DESKTOP_SESSION}"; }
+get_shell() { log shell "${SHELL##*/}"; }
+
+get_editor() {
+    editor=${VISUAL:-"$EDITOR"}
+    log editor "${editor##*/}"
+}
+
+get_palette() {
+    printf '\n' >&6
+    printf '%s%s%s%s\n' \
+        "${e}[${ascii_width}C" \
+        "${e}[7m" \
+        "${c1}  ${c1}  ${c2}  ${c2}  ${c3}  ${c3}  ${c4}  ${c4}  ${c5}  ${c5}  ${c6}  ${c6}  " \
+        "$RST" >&6
+    info_height=$((${info_height:-0} + 1))
+}
+
+get_ascii() {
+    PF_COL1=${PF_COL1:-4}
+    PF_COL3=${PF_COL3:-5}
+    COL1="${e}[3${PF_COL1}m"
+    COL3="${e}[3${PF_COL3}m"
+
+    ascii_height=7
+    ascii_width=19
+
+    printf '%s%s    ___
+   %s(%s.. %s|
+   %s(%s<> %s|
+  %s/ %s__  %s\\
+ %s( %s/  \\ %s/|
+%s_%s/\\ %s__)%s/%s_%s)
+%s\\/%s-____%s\\/
+%s%s' \
+    "$BLD" \
+    "$c4" "$c4" "$c7" "$c4" \
+    "$c4" "$c5" "$c4" \
+    "$c4" "$c7" "$c4" \
+    "$c4" "$c7" "$c4" \
+    "$c5" "$c4" "$c7" "$c4" "$c5" "$c4" \
+    "$c5" "$c4" "$c5" \
+    "$RST" "${e}[${ascii_height}A" >&6
 }
 
 main "$@"
