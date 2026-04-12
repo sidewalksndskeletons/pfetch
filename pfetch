@@ -1,8 +1,8 @@
-#!/bin/sh
+ #!/bin/sh
 #
 # pfetch - Simple POSIX sh fetch script.
 
-# Wrapper around all escape sequences used by pfetch to allow for
+# Wrapper around all escape sequences used by pfetch to allow fordfsdfsdfsd
 # greater control over which sequences are used (if any at all).
 esc() {
     case $1 in
