@@ -112,5 +112,5 @@ PF_WM=""
 
 ## Credit
 
-- [ufetch](https://gitlab.com/jschx/ufetch): Lots of ASCII logos.
-    - Contrary to the belief of a certain youtuber, `pfetch` shares **zero** code with `ufetch`. Only some of the ASCII logos were used.
+- [pfetch](https://github.com/dylanaraps/pfetch/tree/master): The source code
+    - this is just fork of pfetch with code cleanups better wm detecting and with better ram calculation
