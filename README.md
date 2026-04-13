@@ -81,11 +81,6 @@ PF_COL3=1
 # Valid: int
 PF_ALIGN=""
 
-# Which ascii art to use.
-# Default: unset (auto)
-# Valid: string
-PF_ASCII="openbsd"
-
 # The below environment variables control more
 # than just 'pfetch' and can be passed using
 # 'HOSTNAME=cool_pc pfetch' to restrict their
